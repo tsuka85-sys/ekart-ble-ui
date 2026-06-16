@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>eKart BLE Controller</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{width:100%;height:100%;overflow:hidden;background:#f0f0ee;font-family:Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.ui{position:fixed;inset:0;display:flex;flex-direction:column;background:#f0f0ee}
+.top{height:28px;flex-shrink:0;background:#fff;border-bottom:1px solid #e8e8e8;display:flex;align-items:center;padding:0 8px;gap:8px}
+.brand{font-size:11px;font-weight:700;color:#1a1a1a;letter-spacing:.04em}.brand span{color:#185fa5}
+.mode-top{font-size:11px;font-weight:600;color:#185fa5}.right{margin-left:auto;display:flex;align-items:center;gap:7px}
+.dot{width:7px;height:7px;border-radius:50%;background:#bbb}.dot.on{background:#378add;box-shadow:0 0 0 2px rgba(55,138,221,.2)}.dot.err{background:#e24b4a}
+.conn{font-size:10px;color:#999}.time{font-size:10px;color:#bbb;font-variant-numeric:tabular-nums}
+.connect{height:22px;border:1px solid #d8e6f5;border-radius:6px;background:#eef6ff;color:#0c447c;font-size:11px;font-weight:700;padding:0 8px}
+.main{flex:1;min-height:0;display:flex;overflow:hidden}.meter{background:#fff;display:flex;align-items:center;justify-content:center}.m-label{font-size:9px;color:#bbb;letter-spacing:.1em;text-transform:uppercase}
+.speed{font-size:96px;font-weight:500;line-height:1;color:#1a1a1a;font-variant-numeric:tabular-nums}.unit{font-size:12px;color:#bbb;letter-spacing:.1em}
+.rpm,.soc{display:flex;align-items:baseline;gap:4px}.rpm-v{font-size:42px;color:#1a1a1a;font-variant-numeric:tabular-nums}.soc-v{font-size:24px;color:#0f6e56;font-weight:600}
+.small{font-size:11px;color:#bbb}.modes{background:#f0f0ee;display:flex;flex-direction:column;gap:5px;padding:6px}.row{display:flex;gap:5px;flex:1}
+button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transparent;font-size:16px;font-weight:600;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.15;position:relative;overflow:hidden}
+.btn:active,.tune:active,.tog:active,.preset:active{transform:scale(.96)}.btn.active{box-shadow:0 0 0 3px rgba(0,0,0,.22);border-color:rgba(0,0,0,.3)}
+.btn small{font-size:10px;opacity:.65}.stop{background:#e24b4a;color:white;border-color:#c0392b;font-size:20px}.kids{background:#f4c0d1;color:#4b1528;border-color:#d4537e}
+.beg{background:#f5c4b3;color:#4a1b0c;border-color:#d85a30}.yellow{background:#fac775;color:#412402;border-color:#ef9f27}
+.slow{background:#faeeda;color:#d4a017;border-color:#ef9f27}.normal{background:#c8e0f7;color:#0c3d6e;border-color:#378add}
+.boost{background:#fff;color:#bbb;border-color:#e8e8e8}.boost.active{background:#e6f1fb;color:#0c447c;border-color:#378add}
+.info{background:#fff;display:flex;flex-direction:column;padding:8px 10px;gap:6px}.label{font-size:9px;color:#bbb;letter-spacing:.1em;text-transform:uppercase}
+.name{font-size:36px;font-weight:600;line-height:1.1;color:#185fa5}.gain-box{border:1.5px solid #e8e8e8;border-radius:8px;overflow:hidden}
+.gain-display{display:flex;align-items:baseline;padding:5px 10px 3px;background:#f7f8ff;border-bottom:1px solid #eee}.gain{font-size:44px;line-height:1;margin-left:auto;font-variant-numeric:tabular-nums}
+.tunes,.presets,.toggles{display:flex}.tune{flex:1;height:48px;border:0;background:#fff;font-size:34px;font-weight:200}.minus{color:#e24b4a;border-right:1px solid #eee}.plus{color:#185fa5;background:#f7fbff}
+.preset{flex:1;height:24px;border:0;border-right:1px solid #eee;background:#fafafa;font-size:10px;color:#888}.preset.active{background:#e6f1fb;color:#0c447c;font-weight:700}
+.rev{border:1.5px solid #e8e8e8;border-radius:8px;padding:7px 9px;background:#fff}.rev-head{display:flex;justify-content:space-between;align-items:baseline}.rev-v{font-size:18px;font-weight:700;color:#185fa5}.rev input{width:100%;accent-color:#378add}.eff{font-size:11px;color:#888;margin-top:3px}
+.vrow{border-top:1px solid #eee;padding-top:5px;display:flex;flex-direction:column;gap:3px}.vitem{display:flex;justify-content:space-between}.vv{font-size:13px;color:#888;font-weight:600}
+.tog{flex:1;height:42px;border-radius:8px;border:2px solid #e8e8e8;background:#f5f5f3;font-size:13px;font-weight:700;color:#999}.tog.lim{background:#e6f1fb;border-color:#378add;color:#0c447c}.tog.gain-on{background:#eaf3de;border-color:#639922;color:#27500a}
+@keyframes blinkSlow{0%,100%{box-shadow:inset 0 0 0 3px #ffd700}50%{box-shadow:inset 0 0 0 3px #ffe4b5}}@keyframes blinkBoost{0%,100%{box-shadow:inset 0 0 0 3px #378add}50%{box-shadow:inset 0 0 0 3px #cce5ff}}
+.ui.slow-on{animation:blinkSlow 1s infinite}.ui.boost-on{animation:blinkBoost 1s infinite}
+@media (orientation:landscape){.meter{width:240px;flex-direction:column;border-right:1px solid #e8e8e8}.modes{width:230px;flex-shrink:0}.info{flex:1;border-left:1px solid #e8e8e8}.rpm{margin-top:8px}.soc{border-top:1px solid #eee;margin-top:8px;padding-top:6px}.toggles{margin-top:auto;gap:5px}}
+@media (orientation:portrait){.main{flex-direction:column}.meter{height:148px;border-bottom:1px solid #e8e8e8}.meter-left{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;border-right:1px solid #eee}.meter-right{width:148px;display:flex;flex-direction:column;justify-content:center;gap:10px;padding:10px 16px}.speed{font-size:78px}.modes{flex:1}.info{flex-shrink:0;border-top:1px solid #e8e8e8}.info-top{display:flex;gap:8px}.mode-block{min-width:86px}.name{font-size:28px}.gain{font-size:32px}.tune{height:42px}.bottom{display:flex;gap:8px;align-items:center}.vrow{flex:1;border-top:0}.toggles{gap:4px}.tog{height:34px;padding:0 10px;flex:none}.land{display:none!important}}
+@media (orientation:landscape){.port{display:none!important}.meter-left,.meter-right{display:contents}}
+</style>
+</head>
+<body>
+<div class="ui" id="ui">
+  <div class="top">
+    <span class="brand"><span>e</span>Kart</span><span class="mode-top" id="tbMode">Normal</span>
+    <div class="right"><span class="dot" id="dot"></span><span class="conn" id="conn">BLE</span><button class="connect" id="connectBtn">Connect</button><span class="time" id="clock">--:--</span></div>
+  </div>
+  <div class="main">
+    <div class="meter">
+      <div class="meter-left"><span class="m-label">Speed</span><span class="unit">km/h</span><span class="speed" id="speed">--</span></div>
+      <div class="meter-right"><div><span class="m-label">RPM</span><div class="rpm"><span class="rpm-v" id="rpm">----</span></div></div><div class="soc"><span class="soc-v" id="soc">--</span><span class="small">%</span><span class="small">SoC</span></div></div>
+    </div>
+    <div class="modes">
+      <div class="row" style="flex:none;height:52px"><button class="btn stop" data-mode="red">STOP</button></div>
+      <div class="row"><button class="btn kids" data-mode="kids">KIDS<small>0.35</small></button><button class="btn beg" data-mode="beginner">Beginner<small>0.60</small></button></div>
+      <div class="row"><button class="btn yellow" data-mode="yellow">Yellow<small>0.50</small></button><button class="btn slow" data-mode="slowpenalty">SLOW 5sec<small>0.40</small></button></div>
+      <div class="row"><button class="btn normal" data-mode="normal">Normal<small>0.80</small></button><button class="btn boost" disabled>Boost<small>1.00 15s</small></button></div>
+    </div>
+    <div class="info">
+      <div class="info-top">
+        <div class="mode-block"><div class="label">mode</div><div class="name" id="modeName">Normal</div></div>
+        <div class="gain-box" style="flex:1"><div class="gain-display"><span class="label">gain</span><span class="gain" id="gain">0.80</span></div><div class="tunes"><button class="tune minus" id="gainMinus">-</button><button class="tune plus" id="gainPlus">+</button></div><div class="presets"><button class="preset" data-gain="0.40">0.40</button><button class="preset" data-gain="0.60">0.60</button><button class="preset active" data-gain="0.80">0.80</button><button class="preset" data-gain="1.00">1.00</button></div></div>
+      </div>
+      <div class="rev"><div class="rev-head"><span class="label">rev limit</span><span class="rev-v" id="revBase">8000</span></div><input id="revSlider" type="range" min="5000" max="10000" step="500" value="8000"><div class="eff">effective <span id="revEff">6400</span> rpm</div></div>
+      <div class="bottom"><div class="vrow"><div class="vitem"><span class="small">Vin</span><span class="vv" id="vin">-- V</span></div><div class="vitem"><span class="small">Vout</span><span class="vv" id="vout">-- V</span></div></div><div class="toggles"><button class="tog" id="limiter">Limiter</button><button class="tog" id="gainMode">Gain</button></div></div>
+    </div>
+  </div>
+</div>
+<script>
+const SERVICE_UUID='19b10000-e8f2-537e-4f6c-d104768a1214';
+const STATUS_UUID='19b10001-e8f2-537e-4f6c-d104768a1214';
+const COMMAND_UUID='19b10002-e8f2-537e-4f6c-d104768a1214';
+const CMD_MODE=1,CMD_GAIN=2,CMD_REV=3,CMD_OUTPUT=4,CMD_STATUS=5;
+const MODE_INDEX={red:0,kids:1,slowpenalty:2,yellow:3,disturb:4,beginner:5,normal:6,boost:7};
+const MODE_NAME=['STOP','KIDS','SLOW 5sec','Yellow','Disturb','Beginner','Normal','Boost'];
+const MODE_CLASS={'STOP':'stop','KIDS':'kids','Beginner':'beg','Yellow':'yellow','SLOW 5sec':'slow','Normal':'normal'};
+const MODE_COLOR={'STOP':'#c0392b','KIDS':'#72243e','Beginner':'#712b13','Yellow':'#633806','SLOW 5sec':'#d4a017','Normal':'#185fa5','Boost':'#185fa5','Disturb':'#633806'};
+const GEAR_RATIO=7,TIRE_CIRC=2*Math.PI*0.134;
+let device,server,statusChar,commandChar,currentGain=.8,currentRev=8000;
+const $=id=>document.getElementById(id);
+function u16(v,o){return v.getUint16(o,true)}function i16(v,o){return v.getInt16(o,true)}
+function rpmToKmh(rpm){return !rpm||rpm<=0?0:Math.round(rpm/GEAR_RATIO*TIRE_CIRC*60/1000)}
+function le16Bytes(n){n=Math.max(0,Math.min(65535,Math.round(n)));return [n&255,(n>>8)&255]}
+function setConn(on,text){$('dot').className='dot '+(on?'on':'err');$('conn').textContent=text||'BLE';$('connectBtn').textContent=on?'BLE':'Connect'}
+async function connectBle(){
+  try{
+    if(!navigator.bluetooth)throw new Error('Web Bluetooth unavailable');
+    setConn(false,'scan');
+    device=await navigator.bluetooth.requestDevice({filters:[{services:[SERVICE_UUID]}]});
+    device.addEventListener('gattserverdisconnected',()=>{commandChar=null;statusChar=null;setConn(false,'off')});
+    server=await device.gatt.connect();
+    const service=await server.getPrimaryService(SERVICE_UUID);
+    statusChar=await service.getCharacteristic(STATUS_UUID);
+    commandChar=await service.getCharacteristic(COMMAND_UUID);
+    statusChar.addEventListener('characteristicvaluechanged',e=>applyStatus(decodeStatus(e.target.value)));
+    await statusChar.startNotifications();
+    applyStatus(decodeStatus(await statusChar.readValue()));
+    await sendCommand([CMD_STATUS]);
+    setConn(true,'BLE');
+  }catch(e){setConn(false,'err');console.error(e)}
+}
+async function sendCommand(bytes){
+  if(!commandChar){setConn(false,'off');return}
+  const payload=new Uint8Array(20);payload.set(bytes.slice(0,20));
+  if(commandChar.writeValueWithoutResponse)await commandChar.writeValueWithoutResponse(payload);else await commandChar.writeValue(payload);
+}
+function decodeStatus(v){
+  if(v.byteLength<20)throw new Error('short status');
+  const flags=v.getUint8(1),modeIdx=v.getUint8(2);
+  return {mode:MODE_NAME[modeIdx]||'Normal',gain:u16(v,4)/1000,revLimitBaseRpm:u16(v,6),effectiveRevLimitRpm:u16(v,8),motorRPM:(flags&1)?i16(v,10):null,batterySOC:(flags&2)?v.getUint8(12):null,vinNorm:u16(v,13)/5000,voutNorm:u16(v,15)/5000,outMode:(flags&4)?'limiter':'gain'};
+}
+function applyStatus(s){
+  const mode=s.mode||'Normal',rpm=s.motorRPM,kmh=rpm!==null&&rpm>=0?rpmToKmh(rpm):'--',color=MODE_COLOR[mode]||MODE_COLOR.Normal;
+  currentGain=s.gain||0;currentRev=s.revLimitBaseRpm||8000;
+  $('speed').textContent=kmh;$('speed').style.color=mode==='Boost'?'#185fa5':'#1a1a1a';
+  $('rpm').textContent=rpm!==null?rpm:'----';$('soc').textContent=s.batterySOC!==null?s.batterySOC:'--';
+  $('modeName').textContent=mode;$('modeName').style.color=color;$('tbMode').textContent=mode;$('tbMode').style.color=color;
+  $('gain').textContent=currentGain.toFixed(2);$('revBase').textContent=currentRev;$('revEff').textContent=s.effectiveRevLimitRpm||Math.round(currentRev*currentGain);
+  if(document.activeElement!==$('revSlider'))$('revSlider').value=currentRev;
+  $('vin').textContent=(s.vinNorm*5).toFixed(2)+' V';$('vout').textContent=(s.voutNorm*5).toFixed(2)+' V';
+  document.querySelectorAll('.preset').forEach(b=>b.classList.toggle('active',Math.abs(parseFloat(b.dataset.gain)-currentGain)<.001));
+  document.querySelectorAll('.btn').forEach(b=>b.classList.remove('active'));document.querySelector('.boost').classList.remove('active');
+  if(mode==='Boost')document.querySelector('.boost').classList.add('active');else{const cls=MODE_CLASS[mode];if(cls)document.querySelectorAll('.'+cls).forEach(b=>{if(!b.disabled)b.classList.add('active')})}
+  $('ui').classList.toggle('slow-on',mode==='SLOW 5sec');$('ui').classList.toggle('boost-on',mode==='Boost');
+  $('limiter').className='tog '+(s.outMode==='limiter'?'lim':'');$('gainMode').className='tog '+(s.outMode==='gain'?'gain-on':'');
+}
+function previewRev(v){const rpm=Math.min(10000,Math.max(5000,parseInt(v,10)||8000));currentRev=rpm;$('revBase').textContent=rpm;$('revEff').textContent=Math.round(rpm*currentGain)}
+document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>sendCommand([CMD_MODE,MODE_INDEX[b.dataset.mode]])));
+document.querySelectorAll('[data-gain]').forEach(b=>b.addEventListener('click',()=>sendCommand([CMD_GAIN,...le16Bytes(parseFloat(b.dataset.gain)*1000)])));
+$('gainMinus').addEventListener('click',()=>sendCommand([CMD_GAIN,...le16Bytes(Math.max(0,currentGain-.05)*1000)]));
+$('gainPlus').addEventListener('click',()=>sendCommand([CMD_GAIN,...le16Bytes(Math.min(1,currentGain+.05)*1000)]));
+$('revSlider').addEventListener('input',e=>previewRev(e.target.value));$('revSlider').addEventListener('change',e=>sendCommand([CMD_REV,...le16Bytes(e.target.value)]));
+$('limiter').addEventListener('click',()=>sendCommand([CMD_OUTPUT,0]));$('gainMode').addEventListener('click',()=>sendCommand([CMD_OUTPUT,1]));$('connectBtn').addEventListener('click',connectBle);
+function clock(){const d=new Date();$('clock').textContent=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}clock();setInterval(clock,10000);setConn(false,'off');
+</script>
+</body>
+</html>
