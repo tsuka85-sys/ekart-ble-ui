@@ -63,7 +63,7 @@ button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transp
         <div class="mode-block"><div class="label">mode</div><div class="name" id="modeName">Normal</div></div>
         <div class="gain-box" style="flex:1"><div class="gain-display"><span class="label">gain</span><span class="gain" id="gain">0.80</span></div><div class="tunes"><button class="tune minus" id="gainMinus">-</button><button class="tune plus" id="gainPlus">+</button></div><div class="presets"><button class="preset" data-gain="0.40">0.40</button><button class="preset" data-gain="0.60">0.60</button><button class="preset active" data-gain="0.80">0.80</button><button class="preset" data-gain="1.00">1.00</button></div></div>
       </div>
-      <div class="rev"><div class="rev-head"><span class="label">rev limit</span><span class="rev-v" id="revBase">8000</span></div><input id="revSlider" type="range" min="5000" max="10000" step="500" value="8000"><div class="eff">effective <span id="revEff">6400</span> rpm</div></div>
+      <div class="rev"><div class="rev-head"><span class="label">rev limit</span><span class="rev-v" id="revBase">8000</span></div><input id="revSlider" type="range" min="1000" max="10000" step="500" value="8000"><div class="eff">effective <span id="revEff">6400</span> rpm</div></div>
       <div class="bottom"><div class="vrow"><div class="vitem"><span class="small">Vin</span><span class="vv" id="vin">-- V</span></div><div class="vitem"><span class="small">Vout</span><span class="vv" id="vout">-- V</span></div></div><div class="toggles"><button class="tog" id="limiter">Limiter</button><button class="tog" id="gainMode">Gain</button></div></div>
     </div>
   </div>
@@ -126,7 +126,7 @@ function applyStatus(s){
   $('ui').classList.toggle('slow-on',mode==='SLOW 5sec');$('ui').classList.toggle('boost-on',mode==='Boost');
   $('limiter').className='tog '+(s.outMode==='limiter'?'lim':'');$('gainMode').className='tog '+(s.outMode==='gain'?'gain-on':'');
 }
-function previewRev(v){const rpm=Math.min(10000,Math.max(5000,parseInt(v,10)||8000));currentRev=rpm;$('revBase').textContent=rpm;$('revEff').textContent=Math.round(rpm*currentGain)}
+function previewRev(v){const rpm=Math.min(10000,Math.max(1000,parseInt(v,10)||8000));currentRev=rpm;$('revBase').textContent=rpm;$('revEff').textContent=Math.round(rpm*currentGain)}
 document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>sendCommand([CMD_MODE,MODE_INDEX[b.dataset.mode]])));
 document.querySelectorAll('[data-gain]').forEach(b=>b.addEventListener('click',()=>sendCommand([CMD_GAIN,...le16Bytes(parseFloat(b.dataset.gain)*1000)])));
 $('gainMinus').addEventListener('click',()=>sendCommand([CMD_GAIN,...le16Bytes(Math.max(0,currentGain-.05)*1000)]));
