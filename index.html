@@ -21,11 +21,16 @@ html,body{width:100%;height:100%;overflow:hidden;background:#f0f0ee;font-family:
 .rpm,.soc{display:flex;align-items:baseline;gap:4px}.rpm-v{font-size:42px;color:#1a1a1a;font-variant-numeric:tabular-nums}.soc-v{font-size:24px;color:#0f6e56;font-weight:600}
 .small{font-size:11px;color:#bbb}.modes{background:#f0f0ee;display:flex;flex-direction:column;gap:5px;padding:6px}.row{display:flex;gap:5px;flex:1}
 button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transparent;font-size:16px;font-weight:600;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.15;position:relative;overflow:hidden}
-.btn:active,.tune:active,.tog:active,.preset:active{transform:scale(.96)}.btn.active{box-shadow:0 0 0 3px rgba(0,0,0,.22);border-color:rgba(0,0,0,.3)}
+.btn:not(:disabled):active,.tune:active,.tog:active,.preset:active{transform:scale(.96)}.btn.active{box-shadow:0 0 0 3px rgba(0,0,0,.22);border-color:rgba(0,0,0,.3)}
 .btn small{font-size:10px;opacity:.65}.stop{background:#e24b4a;color:white;border-color:#c0392b;font-size:20px}.kids{background:#f4c0d1;color:#4b1528;border-color:#d4537e}
 .beg{background:#f5c4b3;color:#4a1b0c;border-color:#d85a30}.yellow{background:#fac775;color:#412402;border-color:#ef9f27}
 .slow{background:#faeeda;color:#d4a017;border-color:#ef9f27}.normal{background:#c8e0f7;color:#0c3d6e;border-color:#378add}
 .boost{background:#fff;color:#bbb;border-color:#e8e8e8}.boost.active{background:#e6f1fb;color:#0c447c;border-color:#378add}
+@keyframes boostButton{0%,100%{background:#c8e0f7;box-shadow:0 0 0 3px rgba(55,138,221,.4)}50%{background:#eef6ff;box-shadow:0 0 0 3px rgba(55,138,221,.1)}}
+.normal.boost.active{animation:boostButton 1s infinite;cursor:default;pointer-events:none;opacity:1}
+.sw-badge{font-size:9px;color:#378add;font-weight:400}
+@keyframes boostScreen{0%,100%{opacity:.02}50%{opacity:.16}}
+.ui.boost-on::after{content:'';position:absolute;inset:0;background:#378add;pointer-events:none;z-index:100;animation:boostScreen 1s infinite}
 .info{background:#fff;display:flex;flex-direction:column;padding:8px 10px;gap:6px}.label{font-size:9px;color:#bbb;letter-spacing:.1em;text-transform:uppercase}
 .name{font-size:36px;font-weight:600;line-height:1.1;color:#185fa5}.gain-box{border:1.5px solid #e8e8e8;border-radius:8px;overflow:hidden}
 .gain-display{display:flex;align-items:baseline;padding:5px 10px 3px;background:#f7f8ff;border-bottom:1px solid #eee}.gain{font-size:44px;line-height:1;margin-left:auto;font-variant-numeric:tabular-nums}
@@ -60,7 +65,7 @@ button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transp
       <div class="row" style="flex:none;height:52px"><button class="btn stop" data-mode="red">STOP</button></div>
       <div class="row"><button class="btn kids" data-mode="kids">KIDS<small>0.35</small></button><button class="btn beg" data-mode="beginner">Beginner<small>0.60</small></button></div>
       <div class="row"><button class="btn yellow" data-mode="yellow">Yellow<small>0.80</small></button><button class="btn slow" data-mode="slowpenalty">SLOW 5sec<small>0.80</small></button></div>
-      <div class="row"><button class="btn normal" data-mode="normal">Normal<small>0.80</small></button><button class="btn boost" disabled>Boost<small>1.00 15s</small></button></div>
+      <div class="row"><button class="btn normal" id="normalBoost" data-mode="normal"><span id="normalBoostLabel">Normal</span><small id="normalBoostGain">0.80</small><span class="sw-badge" id="normalBoostBadge" hidden>SW only</span></button></div>
     </div>
     <div class="info">
       <div class="info-top">
@@ -127,8 +132,11 @@ function applyStatus(s){
   });
   $('vin').textContent=(s.vinNorm*5).toFixed(2)+' V';$('vout').textContent=(s.voutNorm*5).toFixed(2)+' V';
   document.querySelectorAll('.preset').forEach(b=>b.classList.toggle('active',Math.abs(parseFloat(b.dataset.gain)-currentGain)<.001));
-  document.querySelectorAll('.btn').forEach(b=>b.classList.remove('active'));document.querySelector('.boost').classList.remove('active');
-  if(mode==='Boost')document.querySelector('.boost').classList.add('active');else{const cls=MODE_CLASS[mode];if(cls)document.querySelectorAll('.'+cls).forEach(b=>{if(!b.disabled)b.classList.add('active')})}
+  document.querySelectorAll('.btn').forEach(b=>b.classList.remove('active'));
+  const isBoost=mode==='Boost',normalBoost=$('normalBoost');
+  normalBoost.disabled=isBoost;normalBoost.setAttribute('aria-disabled',String(isBoost));normalBoost.classList.toggle('boost',isBoost);
+  $('normalBoostLabel').textContent=isBoost?'Boost':'Normal';$('normalBoostGain').textContent=isBoost?'1.00 15s':'0.80';$('normalBoostBadge').hidden=!isBoost;
+  if(isBoost)normalBoost.classList.add('active');else{const cls=MODE_CLASS[mode];if(cls)document.querySelectorAll('.'+cls).forEach(b=>{if(!b.disabled)b.classList.add('active')})}
   $('ui').classList.toggle('slow-on',mode==='SLOW 5sec');$('ui').classList.toggle('boost-on',mode==='Boost');
   $('limiter').className='tog '+(s.outMode==='limiter'?'lim':'');$('gainMode').className='tog '+(s.outMode==='gain'?'gain-on':'');
 }
