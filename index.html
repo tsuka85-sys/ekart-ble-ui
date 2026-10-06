@@ -16,6 +16,12 @@ html,body{width:100%;height:100%;overflow:hidden;background:#f0f0ee;font-family:
 .dot{width:7px;height:7px;border-radius:50%;background:#bbb}.dot.on{background:#378add;box-shadow:0 0 0 2px rgba(55,138,221,.2)}.dot.err{background:#e24b4a}
 .conn{font-size:10px;color:#999}.time{font-size:10px;color:#bbb;font-variant-numeric:tabular-nums}
 .connect{height:22px;border:1px solid #d8e6f5;border-radius:6px;background:#eef6ff;color:#0c447c;font-size:11px;font-weight:700;padding:0 8px}
+.ble-tools{height:30px;flex-shrink:0;display:flex;align-items:center;gap:6px;padding:0 8px;background:#fff;border-top:1px solid #ddd;font-size:11px}
+.ble-tools select{max-width:135px;font-size:11px}.ble-tools button{font-size:11px;padding:3px 7px}.ble-tools .age{margin-left:auto;color:#777}
+.diagnostics{position:fixed;inset:8px;z-index:200;background:#fff;border:1px solid #ccc;border-radius:8px;padding:12px;overflow:auto;font-size:12px}.diagnostics[hidden]{display:none}
+.diagnostics header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}.diagnostics button{padding:5px 8px;margin:4px 4px 4px 0}.diagnostics textarea{width:100%;height:55vh;font:11px monospace;white-space:pre;overflow:auto}.diagnostics p{margin:6px 0}
+.ui.stale .meter{background:#fff3e8}.ui.stale .vrow{opacity:.5}
+.tune:disabled,.preset:disabled,.tog:disabled,.btn:disabled:not(.boost){opacity:.45}
 .main{flex:1;min-height:0;display:flex;overflow:hidden}.meter{background:#fff;display:flex;align-items:center;justify-content:center}.m-label{font-size:9px;color:#bbb;letter-spacing:.1em;text-transform:uppercase}
 .speed{font-size:96px;font-weight:500;line-height:1;color:#1a1a1a;font-variant-numeric:tabular-nums}.unit{font-size:12px;color:#bbb;letter-spacing:.1em}
 .rpm,.soc{display:flex;align-items:baseline;gap:4px}.rpm-v{font-size:42px;color:#1a1a1a;font-variant-numeric:tabular-nums}.soc-v{font-size:24px;color:#0f6e56;font-weight:600}
@@ -76,7 +82,14 @@ button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transp
       <div class="bottom"><div class="vrow"><div class="vitem"><span class="small">Vin</span><span class="vv" id="vin">-- V</span></div><div class="vitem"><span class="small">Vout</span><span class="vv" id="vout">-- V</span></div></div><div class="toggles"><button class="tog" id="limiter">Limiter</button><button class="tog" id="gainMode">Gain</button></div></div>
     </div>
   </div>
+  <div class="ble-tools"><label for="recoveryMode">BLE</label><select id="recoveryMode" aria-label="BLE復旧モード"><option value="diagnostic">診断のみ</option><option value="auto">自動復旧あり</option></select><button id="diagnosticsBtn">診断ログ</button><span class="age" id="notifyAge">受信 --</span></div>
 </div>
+<section class="diagnostics" id="diagnosticsPanel" hidden aria-label="BLE診断ログ">
+  <header><strong>BLE診断</strong><button id="closeDiagnostics">閉じる</button></header>
+  <p id="diagnosticsSummary"></p><p>読出確認は通知の復帰を保証しません。ログは直近200件です。</p>
+  <button id="probeBtn">読出確認</button><button id="exportLogBtn">ログ保存</button>
+  <textarea id="diagnosticsLog" readonly aria-label="診断ログ（コピー可能）"></textarea>
+</section>
 <script>
 const SERVICE_UUID='19b10000-e8f2-537e-4f6c-d104768a1214';
 const STATUS_UUID='19b10001-e8f2-537e-4f6c-d104768a1214';
@@ -92,28 +105,235 @@ const $=id=>document.getElementById(id);
 function u16(v,o){return v.getUint16(o,true)}function i16(v,o){return v.getInt16(o,true)}
 function rpmToKmh(rpm){return !rpm||rpm<=0?0:Math.round(rpm/GEAR_RATIO*TIRE_CIRC*60/1000)}
 function le16Bytes(n){n=Math.max(0,Math.min(65535,Math.round(n)));return [n&255,(n>>8)&255]}
-function setConn(on,text){$('dot').className='dot '+(on?'on':'err');$('conn').textContent=text||'BLE';$('connectBtn').textContent=on?'BLE':'Connect'}
-async function connectBle(){
-  try{
-    if(!navigator.bluetooth)throw new Error('Web Bluetooth unavailable');
-    setConn(false,'scan');
-    device=await navigator.bluetooth.requestDevice({filters:[{services:[SERVICE_UUID]}]});
-    device.addEventListener('gattserverdisconnected',()=>{commandChar=null;statusChar=null;setConn(false,'off')});
-    server=await device.gatt.connect();
-    const service=await server.getPrimaryService(SERVICE_UUID);
-    statusChar=await service.getCharacteristic(STATUS_UUID);
-    commandChar=await service.getCharacteristic(COMMAND_UUID);
-    statusChar.addEventListener('characteristicvaluechanged',e=>applyStatus(decodeStatus(e.target.value)));
-    await statusChar.startNotifications();
-    applyStatus(decodeStatus(await statusChar.readValue()));
-    await sendCommand([CMD_STATUS]);
-    setConn(true,'BLE');
-  }catch(e){setConn(false,'err');console.error(e)}
+function setConn(on,text){$('dot').className='dot '+(on?'on':'err');$('conn').textContent=text||'BLE';$('connectBtn').textContent=device?'再接続':'Connect'}
+// Notification health is separate from successful characteristic reads.
+const BLE_STALE_MS=2000,BLE_OPERATION_MS=4000,BLE_RETRY_MS=10000,BLE_MAX_RETRIES=3;
+let bleBusy=false,bleEpoch=0,notificationHandler=null,lastNotificationAt=null,pendingConnect=null;
+let pendingReadEpoch=null;
+const pendingCommands=[];
+const pendingGattOperations=new Set();
+let notificationWatchStartedAt=null,lastRecoveryAttemptAt=-Infinity,recoveryAttempts=0,modeGeneration=0;
+let staleLogged=false,lastSequence=null;
+const bleDiagnostics={notifications:0,reads:0,errors:0,sequenceDuplicates:0,sequenceJumps:0,log:[]};
+function logBle(event,detail=''){
+  bleDiagnostics.log.push({time:new Date().toISOString(),elapsedMs:Math.round(performance.now()),event,detail});
+  if(bleDiagnostics.log.length>200)bleDiagnostics.log.shift();
+  renderDiagnostics();
 }
-async function sendCommand(bytes){
-  if(!commandChar){setConn(false,'off');return}
-  const payload=new Uint8Array(20);payload.set(bytes.slice(0,20));
-  if(commandChar.writeValueWithoutResponse)await commandChar.writeValueWithoutResponse(payload);else await commandChar.writeValue(payload);
+function logBleError(stage,error){bleDiagnostics.errors++;logBle('error',stage+': '+String(error.message||error));}
+function notificationAge(){const t=lastNotificationAt===null?notificationWatchStartedAt:lastNotificationAt;return t===null?null:performance.now()-t;}
+function markStale(){
+  $('ui').classList.add('stale');setConn(false,'更新停止');
+  $('speed').textContent='--';$('rpm').textContent='----';$('soc').textContent='--';
+  $('vin').textContent='-- V';$('vout').textContent='-- V';
+  if(!staleLogged){staleLogged=true;logBle('stale','gattConnected='+Boolean(device&&device.gatt.connected));}
+}
+function renderDiagnostics(){
+  const age=notificationAge();$('notifyAge').textContent=pendingCommands.length?'操作待ち '+pendingCommands.length:bleBusy?'通信処理中':'受信 '+(age===null?'--':(age/1000).toFixed(1)+'s');
+  $('diagnosticsSummary').textContent='GATT: '+Boolean(device&&device.gatt.connected)+' / 通知: '+bleDiagnostics.notifications+' / 読出: '+bleDiagnostics.reads+' / エラー: '+bleDiagnostics.errors+' / seq重複: '+bleDiagnostics.sequenceDuplicates+' / seq飛び: '+bleDiagnostics.sequenceJumps;
+  if(!$('diagnosticsPanel').hidden)$('diagnosticsLog').value=JSON.stringify({mode:$('recoveryMode').value,summary:$('diagnosticsSummary').textContent,events:bleDiagnostics.log},null,2);
+}
+function setBleBusy(on){
+  bleBusy=on;$('ui').setAttribute('aria-busy',String(on));
+  document.querySelectorAll('.btn,.tune,.preset,.tog,.rev input').forEach(control=>{
+    // STOP stays available and is queued before other commands.
+    control.disabled=(on&&control.dataset.mode!=='red')||(control.id==='normalBoost'&&control.classList.contains('boost'));
+  });
+  $('connectBtn').disabled=on;$('probeBtn').disabled=on;
+  renderDiagnostics();
+  if(!on&&pendingCommands.length)Promise.resolve().then(drainCommands);
+}
+function receiveStatus(value,source){
+  try{
+    const status=decodeStatus(value);
+    applyStatus(status);
+    if(source==='notify'){
+      const sequence=value.getUint8(19);
+      if(lastSequence!==null){const step=(sequence-lastSequence+256)%256;
+        if(step===0)bleDiagnostics.sequenceDuplicates++;
+        else if(step!==1){bleDiagnostics.sequenceJumps++;logBle('sequence-jump',lastSequence+' -> '+sequence);}}
+      lastSequence=sequence;bleDiagnostics.notifications++;lastNotificationAt=performance.now();
+      if(staleLogged)logBle('notifications-resumed');
+      staleLogged=false;recoveryAttempts=0;$('ui').classList.remove('stale');setConn(true,'BLE');
+    }else{
+      bleDiagnostics.reads++;logBle('read-ok','seq='+value.getUint8(19));
+      if(staleLogged)markStale();
+    }
+    return true;
+  }catch(e){logBleError(source,e);return false;}
+}
+function bounded(operation,label,ms=BLE_OPERATION_MS){
+  let timer;
+  const entry={epoch:bleEpoch,label};
+  if(label!=='disconnect')pendingGattOperations.add(entry);
+  const tracked=operation.finally(()=>pendingGattOperations.delete(entry));
+  return Promise.race([tracked,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(label+' timeout')),ms);})]).finally(()=>clearTimeout(timer));
+}
+function sessionHasPendingOperation(){return Array.from(pendingGattOperations).some(entry=>entry.epoch===bleEpoch);}
+function detachStatus(){
+  if(statusChar&&notificationHandler)statusChar.removeEventListener('characteristicvaluechanged',notificationHandler);
+  notificationHandler=null;statusChar=null;commandChar=null;server=null;bleEpoch++;
+}
+function onBleDisconnected(){detachStatus();markStale();setConn(false,'off');logBle('disconnected');}
+async function releaseGatt(){
+  detachStatus();
+  if(!device||!device.gatt.connected)return;
+  // Wait for the disconnect event so a late event cannot clear a new session.
+  const target=device;
+  let handler;
+  const disconnected=new Promise(resolve=>{handler=()=>resolve();target.addEventListener('gattserverdisconnected',handler);});
+  try{target.gatt.disconnect();await bounded(disconnected,'disconnect',1500);}
+  finally{target.removeEventListener('gattserverdisconnected',handler);}
+}
+async function attachGatt(readInitial=true){
+  if(pendingConnect)throw new Error('Previous connect still pending; wait or restart Bluefy');
+  const target=device,epoch=++bleEpoch;
+  lastSequence=null;lastNotificationAt=null;notificationWatchStartedAt=performance.now();
+  const guard=()=>{if(epoch!==bleEpoch||target!==device)throw new Error('obsolete BLE session');};
+  try{
+    const connecting=target.gatt.connect();
+    pendingConnect=connecting;
+    // GATT promises cannot be cancelled. Release a connect that finishes after timeout.
+    connecting.then(()=>{
+      if(pendingConnect===connecting)pendingConnect=null;
+      if(epoch!==bleEpoch){target.gatt.disconnect();logBle('late-connect-released');}
+    },()=>{if(pendingConnect===connecting)pendingConnect=null;});
+    server=await bounded(connecting,'connect',8000);guard();
+    const service=await bounded(server.getPrimaryService(SERVICE_UUID),'service');guard();
+    const status=await bounded(service.getCharacteristic(STATUS_UUID),'status characteristic');guard();
+    commandChar=await bounded(service.getCharacteristic(COMMAND_UUID),'command characteristic');guard();
+    statusChar=status;
+    notificationHandler=e=>{
+      // Web Bluetooth uses this event for read responses too. Events during a
+      // raw read are ambiguous, so count only events outside that read window.
+      if(epoch===bleEpoch&&e.target===statusChar&&pendingReadEpoch!==epoch)receiveStatus(e.target.value,'notify');
+    };
+    statusChar.addEventListener('characteristicvaluechanged',notificationHandler);
+    await bounded(statusChar.startNotifications(),'subscribe');guard();
+    // Initial reads are helpful but a read failure must not discard a live subscription.
+    if(readInitial){try{await probeStatus();}catch(e){logBleError('initial-read',e);}}
+    guard();logBle('connected','notifications subscribed');
+    if(!staleLogged)setConn(true,'BLE');
+  }catch(e){if(epoch===bleEpoch){detachStatus();target.gatt.disconnect();}throw e;}
+}
+async function connectBle(){
+  if(bleBusy)return;
+  setBleBusy(true);recoveryAttempts=0;
+  try{
+    logBle('manual-connect');
+    if(device){await releaseGatt();await attachGatt();}
+    else{
+      if(!navigator.bluetooth)throw new Error('Web Bluetooth unavailable');
+      setConn(false,'scan');
+      device=await navigator.bluetooth.requestDevice({filters:[{services:[SERVICE_UUID]}]});
+      device.addEventListener('gattserverdisconnected',onBleDisconnected);
+      await attachGatt();
+    }
+  }catch(e){markStale();setConn(false,'err');logBleError('connect',e);}
+  finally{setBleBusy(false);}
+}
+async function probeStatus(){
+  if(!statusChar||!device.gatt.connected)throw new Error('GATT disconnected');
+  const characteristic=statusChar,epoch=bleEpoch;
+  if(sessionHasPendingOperation())throw new Error('GATT operation still pending; reconnect before probing again');
+  if(pendingReadEpoch===epoch)throw new Error('Previous read still pending; reconnect before probing again');
+  logBle('read-start');
+  pendingReadEpoch=epoch;
+  let rawRead;
+  try{rawRead=characteristic.readValue();}catch(e){pendingReadEpoch=null;throw e;}
+  const trackedRead=rawRead.finally(()=>{if(pendingReadEpoch===epoch)pendingReadEpoch=null;});
+  // Keep suppression after a timeout: a late read event is still not a notification.
+  const value=await bounded(trackedRead,'read');
+  if(epoch!==bleEpoch||characteristic!==statusChar)throw new Error('obsolete read');
+  if(!receiveStatus(value,'read'))throw new Error('invalid status');
+}
+async function manualProbe(){
+  if(bleBusy)return;setBleBusy(true);
+  try{await probeStatus();}catch(e){logBleError('manual-read',e);}
+  finally{setBleBusy(false);}
+}
+function autoAllowed(generation){return $('recoveryMode').value==='auto'&&generation===modeGeneration&&!document.hidden&&pendingCommands.length===0;}
+async function waitForNotification(since,generation){
+  const until=performance.now()+1500;
+  while(performance.now()<until&&autoAllowed(generation)){
+    if(bleDiagnostics.notifications>since)return true;
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  return bleDiagnostics.notifications>since;
+}
+async function recoverBle(){
+  if(bleBusy||!device||!autoAllowed(modeGeneration)||recoveryAttempts>=BLE_MAX_RETRIES)return;
+  setBleBusy(true);const generation=modeGeneration;
+  lastRecoveryAttemptAt=performance.now();recoveryAttempts++;
+  logBle('recovery-start','attempt='+recoveryAttempts);
+  try{
+    let readOk=false;
+    try{await probeStatus();readOk=true;}catch(e){logBleError('recovery-read',e);}
+    if(!autoAllowed(generation))return;
+    if(notificationAge()!==null&&notificationAge()<BLE_STALE_MS){logBle('recovery-ok','notifications already resumed');return;}
+    if(readOk&&statusChar){
+      const count=bleDiagnostics.notifications,characteristic=statusChar,epoch=bleEpoch;
+      try{
+        logBle('resubscribe-start');
+        await bounded(characteristic.stopNotifications(),'unsubscribe');
+        if(epoch!==bleEpoch)return;
+        // Finish the stop/start transaction even when mode changed during stop.
+        // This restores the subscription; no further recovery stage is started.
+        await bounded(characteristic.startNotifications(),'resubscribe');
+        if(!autoAllowed(generation))return;
+        if(await waitForNotification(count,generation)){logBle('recovery-ok','resubscribe');return;}
+        logBle('resubscribe-no-notification');
+      }catch(e){logBleError('resubscribe',e);}
+    }
+    if(!autoAllowed(generation))return;
+    logBle('reconnect-start');await releaseGatt();
+    if(!autoAllowed(generation))return;
+    const count=bleDiagnostics.notifications;await attachGatt();
+    if(await waitForNotification(count,generation))logBle('recovery-ok','reconnect');
+    else{markStale();logBle('reconnect-no-notification');}
+  }catch(e){markStale();logBleError('recovery',e);}
+  finally{setBleBusy(false);}
+}
+function checkBleHealth(){
+  const age=notificationAge();
+  if(age!==null&&age>=BLE_STALE_MS){
+    markStale();
+    if(!bleBusy&&autoAllowed(modeGeneration)&&performance.now()-lastRecoveryAttemptAt>=BLE_RETRY_MS)void recoverBle();
+  }
+  renderDiagnostics();
+}
+function sendCommand(bytes){
+  return new Promise(resolve=>{
+    const item={bytes:bytes.slice(0,20),resolve};
+    if(bytes[0]===CMD_MODE&&bytes[1]===MODE_INDEX.red){
+      // Earlier queued mode/gain requests must not undo a subsequently requested STOP.
+      for(const previous of pendingCommands.splice(0)){previous.resolve(false);logBle('command-superseded','STOP');}
+      pendingCommands.unshift(item);
+    }
+    else pendingCommands.push(item);
+    logBle('command-queued','type='+bytes[0]);void drainCommands();
+  });
+}
+async function drainCommands(){
+  if(bleBusy||!pendingCommands.length)return;
+  setBleBusy(true);
+  try{
+    while(pendingCommands.length){
+      const item=pendingCommands.shift();
+      try{
+        if(sessionHasPendingOperation()){
+          // A timeout does not cancel the native request. Reset that session
+          // before submitting a queued command, including STOP.
+          logBle('command-session-reset','pending native GATT operation');
+          await releaseGatt();await attachGatt(false);
+        }
+        if(!commandChar)throw new Error('GATT disconnected; command not sent');
+        const payload=new Uint8Array(20);payload.set(item.bytes);
+        await bounded(commandChar.writeValueWithoutResponse?commandChar.writeValueWithoutResponse(payload):commandChar.writeValue(payload),'command');
+        logBle('command-sent',JSON.stringify(item.bytes));item.resolve(true);
+      }catch(e){logBleError('command',e);$('conn').textContent='操作失敗';item.resolve(false);}
+    }
+  }finally{setBleBusy(false);}
 }
 function decodeStatus(v){
   if(v.byteLength<20 || v.getUint8(0)!==2)throw new Error('Firmware BLE v2 required');
@@ -139,6 +359,7 @@ function applyStatus(s){
   if(isBoost)normalBoost.classList.add('active');else{const cls=MODE_CLASS[mode];if(cls)document.querySelectorAll('.'+cls).forEach(b=>{if(!b.disabled)b.classList.add('active')})}
   $('ui').classList.toggle('slow-on',mode==='SLOW 5sec');$('ui').classList.toggle('boost-on',mode==='Boost');
   $('limiter').className='tog '+(s.outMode==='limiter'?'lim':'');$('gainMode').className='tog '+(s.outMode==='gain'?'gain-on':'');
+  if(bleBusy)setBleBusy(true);
 }
 function previewRev(mode,v){const rpm=Math.min(10000,Math.max(1000,parseInt(v,10)||1000));$('rev'+mode).textContent=rpm;$('revSpeed'+mode).textContent=(rpm/GEAR_RATIO*TIRE_CIRC*60/1000).toFixed(1);if(document.activeElement!==$('revSlider'+mode))$('revSlider'+mode).value=rpm}
 document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>sendCommand([CMD_MODE,MODE_INDEX[b.dataset.mode]])));
@@ -148,6 +369,13 @@ $('gainPlus').addEventListener('click',()=>sendCommand([CMD_GAIN,...le16Bytes(Ma
 ['Yellow','KIDS'].forEach(m=>{$('revSlider'+m).addEventListener('input',e=>previewRev(m,e.target.value));$('revSlider'+m).addEventListener('change',e=>sendCommand([m==='Yellow'?6:7,...le16Bytes(e.target.value)]))});
 $('limiter').addEventListener('click',()=>sendCommand([CMD_OUTPUT,0]));$('gainMode').addEventListener('click',()=>sendCommand([CMD_OUTPUT,1]));$('connectBtn').addEventListener('click',connectBle);
 function clock(){const d=new Date();$('clock').textContent=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}clock();setInterval(clock,10000);setConn(false,'off');
+$('recoveryMode').addEventListener('change',()=>{modeGeneration++;logBle('mode',$('recoveryMode').value);checkBleHealth();});
+$('diagnosticsBtn').addEventListener('click',()=>{$('diagnosticsPanel').hidden=false;renderDiagnostics();});
+$('closeDiagnostics').addEventListener('click',()=>{$('diagnosticsPanel').hidden=true;});
+$('probeBtn').addEventListener('click',manualProbe);
+$('exportLogBtn').addEventListener('click',()=>{renderDiagnostics();const url=URL.createObjectURL(new Blob([$('diagnosticsLog').value],{type:'application/json'}));const link=document.createElement('a');link.href=url;link.download='ekart-ble-'+Date.now()+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+document.addEventListener('visibilitychange',()=>{modeGeneration++;logBle('visibility',document.visibilityState);if(!document.hidden)checkBleHealth();});
+logBle('page-open','BLE diagnostics v1 / default=diagnostic');setInterval(checkBleHealth,500);
 </script>
 </body>
 </html>
