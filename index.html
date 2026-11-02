@@ -12,7 +12,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#f0f0ee;font-family:
 .ui{position:fixed;inset:0;display:flex;flex-direction:column;background:#f0f0ee}
 .top{height:28px;flex-shrink:0;background:#fff;border-bottom:1px solid #e8e8e8;display:flex;align-items:center;padding:0 8px;gap:8px}
 .brand{font-size:11px;font-weight:700;color:#1a1a1a;letter-spacing:.04em}.brand span{color:#185fa5}
-.mode-top{font-size:11px;font-weight:600;color:#185fa5}.right{margin-left:auto;display:flex;align-items:center;gap:7px}
+.kart-id{font-size:11px;font-weight:600;color:#185fa5;flex:0 1 auto;min-width:0;max-width:40vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.right{margin-left:auto;display:flex;align-items:center;gap:7px;flex-shrink:0}
 .dot{width:7px;height:7px;border-radius:50%;background:#bbb}.dot.on{background:#378add;box-shadow:0 0 0 2px rgba(55,138,221,.2)}.dot.err{background:#e24b4a}
 .conn{font-size:10px;color:#999}.time{font-size:10px;color:#bbb;font-variant-numeric:tabular-nums}
 .connect{height:22px;border:1px solid #d8e6f5;border-radius:6px;background:#eef6ff;color:#0c447c;font-size:11px;font-weight:700;padding:0 8px}
@@ -59,7 +59,7 @@ button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transp
 <body>
 <div class="ui" id="ui">
   <div class="top">
-    <span class="brand"><span>e</span>Kart</span><span class="mode-top" id="tbMode">Normal</span>
+    <span class="brand"><span>e</span>Kart</span><span class="kart-id" id="tbKartId" aria-label="Kart ID">--</span>
     <div class="right"><span class="dot" id="dot"></span><span class="conn" id="conn">BLE</span><button class="connect" id="connectBtn">Connect</button><span class="time" id="clock">--:--</span></div>
   </div>
   <div class="main">
@@ -93,6 +93,7 @@ button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transp
 <script>
 const SERVICE_UUID='19b10000-e8f2-537e-4f6c-d104768a1214';
 const STATUS_UUID='19b10001-e8f2-537e-4f6c-d104768a1214';
+const KART_ID_UUID='19b10003-e8f2-537e-4f6c-d104768a1214';
 const COMMAND_UUID='19b10002-e8f2-537e-4f6c-d104768a1214';
 const CMD_MODE=1,CMD_GAIN=2,CMD_REV=3,CMD_OUTPUT=4,CMD_STATUS=5;
 const MODE_INDEX={red:0,kids:1,slowpenalty:2,yellow:3,disturb:4,beginner:5,normal:6,boost:7};
@@ -170,7 +171,24 @@ function bounded(operation,label,ms=BLE_OPERATION_MS){
   return Promise.race([tracked,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(label+' timeout')),ms);})]).finally(()=>clearTimeout(timer));
 }
 function sessionHasPendingOperation(){return Array.from(pendingGattOperations).some(entry=>entry.epoch===bleEpoch);}
+function clearKartId(){
+  $('tbKartId').textContent='--';$('tbKartId').removeAttribute('title');
+}
+async function readKartId(service,guard){
+  try{
+    const characteristic=await bounded(service.getCharacteristic(KART_ID_UUID),'kart-id characteristic');guard();
+    const value=await bounded(characteristic.readValue(),'kart-id read');guard();
+    const id=new TextDecoder('utf-8',{fatal:true}).decode(value);
+    if(!id||value.byteLength>23||id.includes('\0'))throw new Error('invalid KART_ID');
+    $('tbKartId').textContent=id;$('tbKartId').title=id;
+    logBle('kart-id',id);
+  }catch(e){
+    guard();
+    logBle('kart-id-unavailable',String(e.message||e));
+  }
+}
 function detachStatus(){
+  clearKartId();
   if(statusChar&&notificationHandler)statusChar.removeEventListener('characteristicvaluechanged',notificationHandler);
   notificationHandler=null;statusChar=null;commandChar=null;server=null;bleEpoch++;
 }
@@ -188,6 +206,7 @@ async function releaseGatt(){
 async function attachGatt(readInitial=true){
   if(pendingConnect)throw new Error('Previous connect still pending; wait or restart Bluefy');
   const target=device,epoch=++bleEpoch;
+  clearKartId();
   lastSequence=null;lastNotificationAt=null;notificationWatchStartedAt=performance.now();
   const guard=()=>{if(epoch!==bleEpoch||target!==device)throw new Error('obsolete BLE session');};
   try{
@@ -212,6 +231,9 @@ async function attachGatt(readInitial=true){
     await bounded(statusChar.startNotifications(),'subscribe');guard();
     // Initial reads are helpful but a read failure must not discard a live subscription.
     if(readInitial){try{await probeStatus();}catch(e){logBleError('initial-read',e);}}
+    guard();
+    // Optional metadata: old firmware/read failure must not discard a live BLE session.
+    if(readInitial&&pendingCommands.length===0&&!sessionHasPendingOperation())await readKartId(service,guard);
     guard();logBle('connected','notifications subscribed');
     if(!staleLogged)setConn(true,'BLE');
   }catch(e){if(epoch===bleEpoch){detachStatus();target.gatt.disconnect();}throw e;}
@@ -345,7 +367,7 @@ function applyStatus(s){
   currentGain=s.gain||0;$("activeRev").textContent=s.effectiveRevLimitRpm===65535?"Unlimited":s.effectiveRevLimitRpm+" rpm";
   $('speed').textContent=kmh;$('speed').style.color=mode==='Boost'?'#185fa5':'#1a1a1a';
   $('rpm').textContent=rpm!==null?rpm:'----';$('soc').textContent=s.batterySOC!==null?s.batterySOC:'--';
-  $('modeName').textContent=mode;$('modeName').style.color=color;$('tbMode').textContent=mode;$('tbMode').style.color=color;
+  $('modeName').textContent=mode;$('modeName').style.color=color;
   $('gain').textContent=currentGain.toFixed(2);
   ['Yellow','KIDS'].forEach(m=>{
     if(document.activeElement!==$('revSlider'+m)) previewRev(m,m==='Yellow'?s.yellowRevLimitRpm:s.kidsRevLimitRpm);
