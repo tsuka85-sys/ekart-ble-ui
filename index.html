@@ -13,6 +13,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:#f0f0ee;font-family:
 .top{height:28px;flex-shrink:0;background:#fff;border-bottom:1px solid #e8e8e8;display:flex;align-items:center;padding:0 8px;gap:8px}
 .brand{font-size:11px;font-weight:700;color:#1a1a1a;letter-spacing:.04em}.brand span{color:#185fa5}
 .kart-id{font-size:11px;font-weight:600;color:#185fa5;flex:0 1 auto;min-width:0;max-width:40vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.right{margin-left:auto;display:flex;align-items:center;gap:7px;flex-shrink:0}
+.network-summary{height:22px;border:0;background:transparent;display:flex;gap:5px;align-items:center;padding:0 2px;font-size:9px;color:#777}.net-item{display:flex;align-items:center;gap:2px}.net-dot{width:6px;height:6px;border-radius:50%;background:#aaa}.net-dot.connected{background:#2f9e66}.net-dot.connecting{background:#e0a020}.net-dot.failed{background:#d94841}.net-dot.stopped{background:#aaa}
+.network-panel{position:fixed;z-index:180;right:8px;top:32px;width:210px;background:#fff;border:1px solid #ccc;border-radius:8px;padding:10px;box-shadow:0 4px 16px rgba(0,0,0,.18)}.network-panel[hidden]{display:none}.network-panel header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}.network-row{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-top:1px solid #eee;font-size:12px}.network-row small{display:block;color:#888;margin-top:2px}.network-panel input{width:38px;height:22px}.network-note{font-size:10px;color:#777;margin-top:7px;line-height:1.35}
 .dot{width:7px;height:7px;border-radius:50%;background:#bbb}.dot.on{background:#378add;box-shadow:0 0 0 2px rgba(55,138,221,.2)}.dot.err{background:#e24b4a}
 .conn{font-size:10px;color:#999}.time{font-size:10px;color:#bbb;font-variant-numeric:tabular-nums}
 .connect{height:22px;border:1px solid #d8e6f5;border-radius:6px;background:#eef6ff;color:#0c447c;font-size:11px;font-weight:700;padding:0 8px}
@@ -34,6 +36,7 @@ button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transp
 .boost{background:#fff;color:#bbb;border-color:#e8e8e8}.boost.active{background:#e6f1fb;color:#0c447c;border-color:#378add}
 @keyframes boostButton{0%,100%{background:#c8e0f7;box-shadow:0 0 0 3px rgba(55,138,221,.4)}50%{background:#eef6ff;box-shadow:0 0 0 3px rgba(55,138,221,.1)}}
 .normal.boost.active{animation:boostButton 1s infinite;cursor:default;pointer-events:none;opacity:1}
+.normal.boost.active #normalBoostLabel{font-size:20px}
 .sw-badge{font-size:9px;color:#378add;font-weight:400}
 @keyframes boostScreen{0%,100%{opacity:.02}50%{opacity:.16}}
 .ui.boost-on::after{content:'';position:absolute;inset:0;background:#378add;pointer-events:none;z-index:100;animation:boostScreen 1s infinite}
@@ -60,7 +63,7 @@ button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transp
 <div class="ui" id="ui">
   <div class="top">
     <span class="brand"><span>e</span>Kart</span><span class="kart-id" id="tbKartId" aria-label="Kart ID">--</span>
-    <div class="right"><span class="dot" id="dot"></span><span class="conn" id="conn">BLE</span><button class="connect" id="connectBtn">Connect</button><span class="time" id="clock">--:--</span></div>
+    <div class="right"><button class="network-summary" id="networkSettingsBtn" aria-label="通信設定"><span class="net-item"><span class="net-dot stopped" id="wifiDot"></span><span id="wifiState">WiFi --</span></span><span class="net-item"><span class="net-dot stopped" id="mqttDot"></span><span id="mqttState">MQTT --</span></span></button><span class="dot" id="dot"></span><span class="conn" id="conn">BLE</span><button class="connect" id="connectBtn">Connect</button><span class="time" id="clock">--:--</span></div>
   </div>
   <div class="main">
     <div class="meter">
@@ -84,6 +87,12 @@ button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transp
   </div>
   <div class="ble-tools"><label for="recoveryMode">BLE</label><select id="recoveryMode" aria-label="BLE復旧モード"><option value="diagnostic">診断のみ</option><option value="auto">自動復旧あり</option></select><button id="diagnosticsBtn">診断ログ</button><span class="age" id="notifyAge">受信 --</span></div>
 </div>
+<section class="network-panel" id="networkPanel" hidden aria-label="通信設定">
+  <header><strong>通信設定</strong><button id="closeNetworkPanel">閉じる</button></header>
+  <label class="network-row"><span>WiFi<small id="wifiDetail">状態不明</small></span><input id="wifiToggle" type="checkbox" disabled></label>
+  <label class="network-row"><span>MQTT<small id="mqttDetail">状態不明</small></span><input id="mqttToggle" type="checkbox" disabled></label>
+  <p class="network-note">OFFにすると新しい接続・再接続と通信処理を停止します。設定は再起動で初期値に戻ります。</p>
+</section>
 <section class="diagnostics" id="diagnosticsPanel" hidden aria-label="BLE診断ログ">
   <header><strong>BLE診断</strong><button id="closeDiagnostics">閉じる</button></header>
   <p id="diagnosticsSummary"></p><p>読出確認は通知の復帰を保証しません。ログは直近200件です。</p>
@@ -94,14 +103,15 @@ button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transp
 const SERVICE_UUID='19b10000-e8f2-537e-4f6c-d104768a1214';
 const STATUS_UUID='19b10001-e8f2-537e-4f6c-d104768a1214';
 const KART_ID_UUID='19b10003-e8f2-537e-4f6c-d104768a1214';
+const NETWORK_STATUS_UUID='19b10004-e8f2-537e-4f6c-d104768a1214';
 const COMMAND_UUID='19b10002-e8f2-537e-4f6c-d104768a1214';
-const CMD_MODE=1,CMD_GAIN=2,CMD_REV=3,CMD_OUTPUT=4,CMD_STATUS=5;
+const CMD_MODE=1,CMD_GAIN=2,CMD_REV=3,CMD_OUTPUT=4,CMD_STATUS=5,CMD_WIFI_ENABLED=8,CMD_MQTT_ENABLED=9;
 const MODE_INDEX={red:0,kids:1,slowpenalty:2,yellow:3,disturb:4,beginner:5,normal:6,boost:7};
 const MODE_NAME=['STOP','KIDS','SLOW 5sec','Yellow','Disturb','Beginner','Normal','Boost'];
 const MODE_CLASS={'STOP':'stop','KIDS':'kids','Beginner':'beg','Yellow':'yellow','SLOW 5sec':'slow','Normal':'normal'};
 const MODE_COLOR={'STOP':'#c0392b','KIDS':'#72243e','Beginner':'#712b13','Yellow':'#633806','SLOW 5sec':'#d4a017','Normal':'#185fa5','Boost':'#185fa5','Disturb':'#633806'};
 const GEAR_RATIO=7,TIRE_CIRC=2*Math.PI*0.134;
-let device,server,statusChar,commandChar,currentGain=.8;
+let device,server,statusChar,commandChar,networkChar,networkHandler,currentGain=.8;
 const $=id=>document.getElementById(id);
 function u16(v,o){return v.getUint16(o,true)}function i16(v,o){return v.getInt16(o,true)}
 function rpmToKmh(rpm){return !rpm||rpm<=0?0:Math.round(rpm/GEAR_RATIO*TIRE_CIRC*60/1000)}
@@ -174,6 +184,34 @@ function sessionHasPendingOperation(){return Array.from(pendingGattOperations).s
 function clearKartId(){
   $('tbKartId').textContent='--';$('tbKartId').removeAttribute('title');
 }
+const NETWORK_STATE=['stopped','connecting','connected','failed'];
+const NETWORK_LABEL={stopped:'OFF',connecting:'接続中',connected:'接続',failed:'未接続'};
+function clearNetworkStatus(){
+  if(networkChar&&networkHandler&&typeof networkChar.removeEventListener==='function')networkChar.removeEventListener('characteristicvaluechanged',networkHandler);
+  networkChar=null;networkHandler=null;
+  ['wifi','mqtt'].forEach(name=>{$(name+'State').textContent=(name==='wifi'?'WiFi':'MQTT')+' --';$(name+'Dot').className='net-dot stopped';$(name+'Detail').textContent='状態不明';});
+  $('wifiToggle').disabled=true;$('mqttToggle').disabled=true;
+}
+function applyNetworkStatus(value){
+  if(value.byteLength<5||value.getUint8(0)!==1)throw new Error('invalid network status');
+  const flags=value.getUint8(1),wifiDesired=Boolean(flags&1),mqttDesired=Boolean(flags&2),busy=Boolean(flags&4);
+  const wifi=NETWORK_STATE[value.getUint8(2)]||'failed',mqtt=NETWORK_STATE[value.getUint8(3)]||'failed';
+  $('wifiToggle').checked=wifiDesired;$('mqttToggle').checked=mqttDesired;
+  $('wifiToggle').disabled=busy;$('mqttToggle').disabled=busy||!wifiDesired;
+  [['wifi','WiFi',wifi],['mqtt','MQTT',mqtt]].forEach(([id,label,state])=>{
+    $(id+'State').textContent=label+' '+NETWORK_LABEL[state];$(id+'Dot').className='net-dot '+state;$(id+'Detail').textContent=busy?'処理中':NETWORK_LABEL[state];
+  });
+}
+async function readNetworkStatus(service,guard){
+  try{
+    const characteristic=await bounded(service.getCharacteristic(NETWORK_STATUS_UUID),'network characteristic');guard();
+    networkChar=characteristic;
+    networkHandler=e=>{if(e.target===networkChar)try{applyNetworkStatus(e.target.value)}catch(error){logBleError('network-notify',error)}};
+    networkChar.addEventListener('characteristicvaluechanged',networkHandler);
+    await bounded(networkChar.startNotifications(),'network subscribe');guard();
+    const value=await bounded(networkChar.readValue(),'network read');guard();applyNetworkStatus(value);
+  }catch(e){guard();clearNetworkStatus();logBle('network-status-unavailable',String(e.message||e));}
+}
 async function readKartId(service,guard){
   try{
     const characteristic=await bounded(service.getCharacteristic(KART_ID_UUID),'kart-id characteristic');guard();
@@ -190,7 +228,7 @@ async function readKartId(service,guard){
 function detachStatus(){
   clearKartId();
   if(statusChar&&notificationHandler)statusChar.removeEventListener('characteristicvaluechanged',notificationHandler);
-  notificationHandler=null;statusChar=null;commandChar=null;server=null;bleEpoch++;
+  clearNetworkStatus();notificationHandler=null;statusChar=null;commandChar=null;server=null;bleEpoch++;
 }
 function onBleDisconnected(){detachStatus();markStale();setConn(false,'off');logBle('disconnected');}
 async function releaseGatt(){
@@ -229,6 +267,7 @@ async function attachGatt(readInitial=true){
     };
     statusChar.addEventListener('characteristicvaluechanged',notificationHandler);
     await bounded(statusChar.startNotifications(),'subscribe');guard();
+    await readNetworkStatus(service,guard);guard();
     // Initial reads are helpful but a read failure must not discard a live subscription.
     if(readInitial){try{await probeStatus();}catch(e){logBleError('initial-read',e);}}
     guard();
@@ -377,7 +416,7 @@ function applyStatus(s){
   document.querySelectorAll('.btn').forEach(b=>b.classList.remove('active'));
   const isBoost=mode==='Boost',normalBoost=$('normalBoost');
   normalBoost.disabled=isBoost;normalBoost.setAttribute('aria-disabled',String(isBoost));normalBoost.classList.toggle('boost',isBoost);
-  $('normalBoostLabel').textContent=isBoost?'Boost':'Normal';$('normalBoostGain').textContent=isBoost?'1.00 15s':'0.80';$('normalBoostBadge').hidden=!isBoost;
+  $('normalBoostLabel').textContent=isBoost?'Boost':'Normal';$('normalBoostGain').textContent='0.80';$('normalBoostGain').hidden=isBoost;$('normalBoostBadge').hidden=true;
   if(isBoost)normalBoost.classList.add('active');else{const cls=MODE_CLASS[mode];if(cls)document.querySelectorAll('.'+cls).forEach(b=>{if(!b.disabled)b.classList.add('active')})}
   $('ui').classList.toggle('slow-on',mode==='SLOW 5sec');$('ui').classList.toggle('boost-on',mode==='Boost');
   $('limiter').className='tog '+(s.outMode==='limiter'?'lim':'');$('gainMode').className='tog '+(s.outMode==='gain'?'gain-on':'');
@@ -390,6 +429,10 @@ $('gainMinus').addEventListener('click',()=>sendCommand([CMD_GAIN,...le16Bytes(M
 $('gainPlus').addEventListener('click',()=>sendCommand([CMD_GAIN,...le16Bytes(Math.min(1,currentGain+.05)*1000)]));
 ['Yellow','KIDS'].forEach(m=>{$('revSlider'+m).addEventListener('input',e=>previewRev(m,e.target.value));$('revSlider'+m).addEventListener('change',e=>sendCommand([m==='Yellow'?6:7,...le16Bytes(e.target.value)]))});
 $('limiter').addEventListener('click',()=>sendCommand([CMD_OUTPUT,0]));$('gainMode').addEventListener('click',()=>sendCommand([CMD_OUTPUT,1]));$('connectBtn').addEventListener('click',connectBle);
+$('networkSettingsBtn').addEventListener('click',()=>{$('networkPanel').hidden=!$('networkPanel').hidden;});
+$('closeNetworkPanel').addEventListener('click',()=>{$('networkPanel').hidden=true;});
+$('wifiToggle').addEventListener('change',e=>sendCommand([CMD_WIFI_ENABLED,e.target.checked?1:0]));
+$('mqttToggle').addEventListener('change',e=>sendCommand([CMD_MQTT_ENABLED,e.target.checked?1:0]));
 function clock(){const d=new Date();$('clock').textContent=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}clock();setInterval(clock,10000);setConn(false,'off');
 $('recoveryMode').addEventListener('change',()=>{modeGeneration++;logBle('mode',$('recoveryMode').value);checkBleHealth();});
 $('diagnosticsBtn').addEventListener('click',()=>{$('diagnosticsPanel').hidden=false;renderDiagnostics();});
@@ -397,7 +440,7 @@ $('closeDiagnostics').addEventListener('click',()=>{$('diagnosticsPanel').hidden
 $('probeBtn').addEventListener('click',manualProbe);
 $('exportLogBtn').addEventListener('click',()=>{renderDiagnostics();const url=URL.createObjectURL(new Blob([$('diagnosticsLog').value],{type:'application/json'}));const link=document.createElement('a');link.href=url;link.download='ekart-ble-'+Date.now()+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 document.addEventListener('visibilitychange',()=>{modeGeneration++;logBle('visibility',document.visibilityState);if(!document.hidden)checkBleHealth();});
-logBle('page-open','BLE diagnostics v1 / default=diagnostic');setInterval(checkBleHealth,500);
+clearNetworkStatus();logBle('page-open','BLE diagnostics v1 / default=diagnostic');setInterval(checkBleHealth,500);
 </script>
 </body>
 </html>
