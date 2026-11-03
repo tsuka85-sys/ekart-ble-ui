@@ -57,6 +57,13 @@ button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transp
 .info{gap:4px;padding:6px 8px}.info-top{display:flex;align-items:center;gap:8px}.mode-block{min-width:84px}.name{font-size:24px}.gain{font-size:30px}.tune{height:30px;font-size:26px}.preset{height:20px}
 .rev{padding:4px 7px}.bottom{display:flex;gap:8px;align-items:center}.vrow{flex:1;border-top:0;padding-top:0}.toggles{gap:4px}.tog{height:34px;padding:0 8px;flex:none}
 }
+
+.network-panel{width:min(330px,calc(100vw - 16px));max-height:calc(100dvh - 42px);overflow-y:auto;box-sizing:border-box}
+.wifi-form{border-top:1px solid #eee;padding-top:8px;margin-top:8px;display:grid;gap:8px;font-size:12px}
+.wifi-form label{display:grid;gap:4px}.wifi-form input,.wifi-form select{width:100%;height:34px;box-sizing:border-box;font-size:14px;padding:4px 6px}
+.wifi-form button{min-height:34px}.wifi-address{font-size:11px;line-height:1.5;overflow-wrap:anywhere}.wifi-message{font-size:12px;line-height:1.4}
+.network-panel header{position:sticky;top:-10px;background:#fff;z-index:1;padding:8px 0}.wifi-form .saved-wifi{display:flex;align-items:center;gap:6px}.wifi-form .saved-wifi input{width:20px;height:20px}
+.wifi-form .saved-wifi[hidden]{display:none}
 </style>
 </head>
 <body>
@@ -91,7 +98,21 @@ button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transp
   <header><strong>通信設定</strong><button id="closeNetworkPanel">閉じる</button></header>
   <label class="network-row"><span>WiFi<small id="wifiDetail">状態不明</small></span><input id="wifiToggle" type="checkbox" disabled></label>
   <label class="network-row"><span>MQTT<small id="mqttDetail">状態不明</small></span><input id="mqttToggle" type="checkbox" disabled></label>
-  <p class="network-note">OFFにすると新しい接続・再接続と通信処理を停止します。設定は再起動で初期値に戻ります。</p>
+  <div class="wifi-form">
+    <div>接続モード：<strong id="wifiActiveMode">不明</strong></div>
+    <label>WiFi mode<select id="wifiMode" disabled><option value="2">iPhone</option><option value="1">BUFFALO（固定IP）</option><option value="3">ホーム・施設Wi-Fi（自動IP）</option></select></label>
+    <label class="saved-wifi" id="savedWifiRow" hidden><input id="useSavedWifi" type="checkbox" disabled><span id="savedWifiName">保存済みのSSID・パスワードを使う</span></label>
+    <div id="wifiCustomFields" hidden>
+      <label>SSID<input id="wifiSsid" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" disabled></label>
+      <label>パスワード<input id="wifiPassword" type="password" autocomplete="new-password" placeholder="なしの場合は空欄" disabled></label>
+      <p class="network-note">変更時はパスワードを再入力してください。空欄で保存するとパスワードなしの接続になります。</p>
+    </div>
+    <button id="saveWifiProfile" disabled>保存して適用</button>
+    <div id="wifiProfileMessage" class="wifi-message" role="status">BLE接続後に利用できます。</div>
+    <div id="wifiAddress" class="wifi-address">IP / ゲートウェイ / DNS：未取得</div>
+  </div>
+  <p class="network-note">接続モードとSSID・パスワードはArduinoに保存されます。WiFi/MQTTのON・OFFは再起動で初期値に戻ります。WiFiがOFFの間は接続しません。</p>
+  <p class="network-note">2.4GHzの通常のWi-Fi用です。ブラウザでの同意・ログインや企業認証には対応しません。MQTTの接続先は別設定です。</p>
 </section>
 <section class="diagnostics" id="diagnosticsPanel" hidden aria-label="BLE診断ログ">
   <header><strong>BLE診断</strong><button id="closeDiagnostics">閉じる</button></header>
@@ -152,6 +173,7 @@ function setBleBusy(on){
   });
   $('connectBtn').disabled=on;$('probeBtn').disabled=on;
   renderDiagnostics();
+  updateWifiProfileControls();
   if(!on&&pendingCommands.length)Promise.resolve().then(drainCommands);
 }
 function receiveStatus(value,source){
@@ -184,6 +206,102 @@ function sessionHasPendingOperation(){return Array.from(pendingGattOperations).s
 function clearKartId(){
   $('tbKartId').textContent='--';$('tbKartId').removeAttribute('title');
 }
+const WIFI_CONFIG_WRITE_UUID='19b10005-e8f2-537e-4f6c-d104768a1214';
+const WIFI_CONFIG_STATUS_UUID='19b10006-e8f2-537e-4f6c-d104768a1214';
+const WIFI_CONFIG_SSID_UUID='19b10007-e8f2-537e-4f6c-d104768a1214';
+const WIFI_MODE_NAMES={1:'BUFFALO',2:'iPhone',3:'ホーム・施設Wi-Fi'};
+let wifiConfigWriteChar=null,wifiConfigStatusChar=null,wifiConfigHandler=null;
+let wifiProvisioningBusy=false,wifiProfileEditing=false,wifiConfigSupported=false,wifiConfigToken=0,wifiCustomSaved=false;
+function updateWifiProfileControls(){
+  const disabled=!wifiConfigSupported||!wifiConfigWriteChar||wifiProvisioningBusy||bleBusy||sessionHasPendingOperation();
+  ['wifiMode','wifiSsid','wifiPassword','saveWifiProfile','useSavedWifi'].forEach(id=>$(id).disabled=disabled);
+  $('savedWifiRow').hidden=!wifiCustomSaved||$('wifiMode').value!=='3';
+  $('wifiCustomFields').hidden=$('wifiMode').value!=='3'||(wifiCustomSaved&&$('useSavedWifi').checked);
+}
+function clearWifiProfile(){
+  if(wifiConfigStatusChar&&wifiConfigHandler&&typeof wifiConfigStatusChar.removeEventListener==='function')wifiConfigStatusChar.removeEventListener('characteristicvaluechanged',wifiConfigHandler);
+  wifiConfigWriteChar=wifiConfigStatusChar=wifiConfigHandler=null;wifiConfigSupported=false;wifiProfileEditing=false;wifiCustomSaved=false;$('useSavedWifi').checked=false;
+  $('wifiPassword').value='';$('wifiSsid').value='';$('wifiActiveMode').textContent='不明';
+  $('wifiAddress').textContent='IP / ゲートウェイ / DNS：未取得';
+  $('wifiProfileMessage').textContent='設定機能が未対応、またはBLE未接続です。';updateWifiProfileControls();
+}
+function applyWifiProfileStatus(v){
+  if(v.byteLength!==20||v.getUint8(0)!==1||!WIFI_MODE_NAMES[v.getUint8(1)])throw Error('invalid WiFi profile status');
+  wifiConfigSupported=Boolean(v.getUint8(19)&1);
+  wifiCustomSaved=Boolean(v.getUint8(6));
+  $('wifiActiveMode').textContent=WIFI_MODE_NAMES[v.getUint8(1)];
+  if(!wifiProfileEditing&&!wifiProvisioningBusy)$('wifiMode').value=String(v.getUint8(1));
+  const ip=offset=>Array.from({length:4},(_,i)=>v.getUint8(offset+i)).join('.');
+  $('wifiAddress').textContent=ip(7)==='0.0.0.0'?'IP / ゲートウェイ / DNS：未取得':
+    'IP: '+ip(7)+' / GW: '+ip(11)+' / DNS: '+ip(15);
+  updateWifiProfileControls();return v;
+}
+async function readWifiProfile(service,guard){
+  try{
+    wifiConfigWriteChar=await bounded(service.getCharacteristic(WIFI_CONFIG_WRITE_UUID),'WiFi config write');guard();
+    wifiConfigStatusChar=await bounded(service.getCharacteristic(WIFI_CONFIG_STATUS_UUID),'WiFi config status');guard();
+    wifiConfigHandler=e=>{if(e.target===wifiConfigStatusChar)try{applyWifiProfileStatus(e.target.value)}catch(error){logBleError('WiFi config status',error)}};
+    wifiConfigStatusChar.addEventListener('characteristicvaluechanged',wifiConfigHandler);
+    await bounded(wifiConfigStatusChar.startNotifications(),'WiFi config subscribe');guard();
+    const status=await bounded(wifiConfigStatusChar.readValue(),'WiFi config read');guard();applyWifiProfileStatus(status);
+    const ssidChar=await bounded(service.getCharacteristic(WIFI_CONFIG_SSID_UUID),'WiFi SSID');guard();
+    const ssid=await bounded(ssidChar.readValue(),'WiFi SSID read');guard();
+    $('wifiSsid').value=new TextDecoder('utf-8',{fatal:true}).decode(ssid);
+    $('savedWifiName').textContent='保存済み（'+$('wifiSsid').value+'）を使う';
+    $('useSavedWifi').checked=wifiCustomSaved;
+    $('wifiProfileMessage').textContent=wifiConfigSupported?'接続先を選び、保存して適用してください。':'このビルドはWiFi無効です。';
+  }catch(error){guard();clearWifiProfile();logBle('WiFi-config-unavailable');}
+}
+function wifiProfilePayload(mode,ssid,password){
+  const encode=new TextEncoder(),s=encode.encode(ssid),p=encode.encode(password);
+  if(![1,2,3].includes(mode))throw Error('接続モードが不正です。');
+  if(mode!==3)return {s:new Uint8Array(),p:new Uint8Array()};
+  if(!s.length||s.length>32)throw Error('SSIDは1〜32バイトで入力してください。');
+  if(p.length>63||(p.length>0&&p.length<8))throw Error('パスワードは空欄、または8〜63バイトで入力してください。');
+  if([...s,...p].some(b=>b<32||b===127||b===44))throw Error('SSID・パスワードにカンマや制御文字は使用できません。');
+  return {s,p};
+}
+async function saveWifiProfile(){
+  if(wifiProvisioningBusy||bleBusy||!wifiConfigSupported||!wifiConfigWriteChar||sessionHasPendingOperation())return;
+  let data;
+  try{data=wifiCustomSaved&&$('useSavedWifi').checked&&$('wifiMode').value==='3'?{s:new Uint8Array(),p:new Uint8Array()}:wifiProfilePayload(Number($('wifiMode').value),$('wifiSsid').value,$('wifiPassword').value)}
+  catch(error){$('wifiProfileMessage').textContent=error.message;return;}
+  const mode=Number($('wifiMode').value),token=(++wifiConfigToken)&255,epoch=bleEpoch;
+  const writeChar=wifiConfigWriteChar,readChar=wifiConfigStatusChar;
+  const guard=()=>{if(epoch!==bleEpoch||writeChar!==wifiConfigWriteChar)throw Error('BLE接続が切れました。再接続して保存状態を確認してください。')};
+  wifiProvisioningBusy=true;setBleBusy(true);updateWifiProfileControls();
+  $('wifiProfileMessage').textContent='Arduinoへ送信・保存中…';
+  async function exchange(bytes,offset){
+    guard();const payload=new Uint8Array(bytes);
+    const write=writeChar.writeValueWithResponse?writeChar.writeValueWithResponse(payload):writeChar.writeValue(payload);
+    await bounded(write,'WiFi config transfer');guard();
+    const deadline=performance.now()+8000;
+    while(performance.now()<deadline){
+      const v=await bounded(readChar.readValue(),'WiFi config acknowledgement');guard();
+      applyWifiProfileStatus(v);
+      if(v.getUint8(3)===token&&v.getUint8(4)===bytes[0]){
+        const result=v.getUint8(2);
+        if(result>=3)throw Error(result===4?'保存失敗：Arduinoの保存領域を確認してください。':'設定を受け付けられませんでした。');
+        if(bytes[0]===2?result===2:result===0&&v.getUint8(5)===offset)return;
+      }
+      await new Promise(resolve=>setTimeout(resolve,40));guard();
+    }
+    throw Error('応答待ちが終了しました。再接続して保存状態を確認してください。');
+  }
+  try{
+    await exchange([0,token,mode,data.s.length,data.p.length],0);
+    const bytes=new Uint8Array([...data.s,...data.p]);
+    for(let offset=0;offset<bytes.length;offset+=17){
+      const part=Array.from(bytes.slice(offset,offset+17));await exchange([1,token,offset,...part],offset+part.length);
+    }
+    await exchange([2,token],null);guard();
+    if(mode===3&&data.s.length)$('savedWifiName').textContent='保存済み（'+$('wifiSsid').value+'）を使う';
+    $('wifiPassword').value='';wifiProfileEditing=false;
+    $('wifiProfileMessage').textContent='保存しました。WiFiがONなら選択した接続先へ接続します。';
+  }catch(error){if(epoch===bleEpoch)$('wifiProfileMessage').textContent=error.message;}
+  finally{data.p.fill(0);wifiProvisioningBusy=false;setBleBusy(false);updateWifiProfileControls();}
+}
+
 const NETWORK_STATE=['stopped','connecting','connected','failed'];
 const NETWORK_LABEL={stopped:'OFF',connecting:'接続中',connected:'接続',failed:'未接続'};
 function clearNetworkStatus(){
@@ -227,6 +345,7 @@ async function readKartId(service,guard){
 }
 function detachStatus(){
   clearKartId();
+  clearWifiProfile();
   if(statusChar&&notificationHandler)statusChar.removeEventListener('characteristicvaluechanged',notificationHandler);
   clearNetworkStatus();notificationHandler=null;statusChar=null;commandChar=null;server=null;bleEpoch++;
 }
@@ -268,6 +387,7 @@ async function attachGatt(readInitial=true){
     statusChar.addEventListener('characteristicvaluechanged',notificationHandler);
     await bounded(statusChar.startNotifications(),'subscribe');guard();
     await readNetworkStatus(service,guard);guard();
+    await readWifiProfile(service,guard);guard();
     // Initial reads are helpful but a read failure must not discard a live subscription.
     if(readInitial){try{await probeStatus();}catch(e){logBleError('initial-read',e);}}
     guard();
@@ -431,6 +551,11 @@ $('gainPlus').addEventListener('click',()=>sendCommand([CMD_GAIN,...le16Bytes(Ma
 $('limiter').addEventListener('click',()=>sendCommand([CMD_OUTPUT,0]));$('gainMode').addEventListener('click',()=>sendCommand([CMD_OUTPUT,1]));$('connectBtn').addEventListener('click',connectBle);
 $('networkSettingsBtn').addEventListener('click',()=>{$('networkPanel').hidden=!$('networkPanel').hidden;});
 $('closeNetworkPanel').addEventListener('click',()=>{$('networkPanel').hidden=true;});
+$('wifiMode').addEventListener('change',()=>{wifiProfileEditing=true;updateWifiProfileControls()});
+$('useSavedWifi').addEventListener('change',()=>{wifiProfileEditing=true;updateWifiProfileControls()});
+$('wifiSsid').addEventListener('input',()=>wifiProfileEditing=true);
+$('wifiPassword').addEventListener('input',()=>wifiProfileEditing=true);
+$('saveWifiProfile').addEventListener('click',saveWifiProfile);
 $('wifiToggle').addEventListener('change',e=>sendCommand([CMD_WIFI_ENABLED,e.target.checked?1:0]));
 $('mqttToggle').addEventListener('change',e=>sendCommand([CMD_MQTT_ENABLED,e.target.checked?1:0]));
 function clock(){const d=new Date();$('clock').textContent=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}clock();setInterval(clock,10000);setConn(false,'off');
