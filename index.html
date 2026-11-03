@@ -107,12 +107,19 @@ button{font-family:inherit}.btn{flex:1;border-radius:8px;border:2px solid transp
       <label>パスワード<input id="wifiPassword" type="password" autocomplete="new-password" placeholder="なしの場合は空欄" disabled></label>
       <p class="network-note">変更時はパスワードを再入力してください。空欄で保存するとパスワードなしの接続になります。</p>
     </div>
+    <div id="wifiBrokerActive" class="wifi-address">現在のBroker：不明</div>
+    <div id="wifiBrokerFields" hidden>
+      <label>Broker PCのIPv4<input id="wifiBrokerIp" type="text" inputmode="decimal" placeholder="例：192.168.1.50" autocomplete="off" spellcheck="false" disabled></label>
+      <label>MQTTポート<input id="wifiBrokerPort" type="number" min="1" max="65535" step="1" value="1883" disabled></label>
+      <p class="network-note">Arduino自身ではなく、Broker PCのIPを入力します。通常のMQTTポートは1883です（ブラウザ用9001とは別）。保存済みWi-Fiを使い、Brokerだけ変更することもできます。</p>
+    </div>
+    <div id="wifiBrokerPreview" class="wifi-address">適用先Broker：不明</div>
     <button id="saveWifiProfile" disabled>保存して適用</button>
     <div id="wifiProfileMessage" class="wifi-message" role="status">BLE接続後に利用できます。</div>
     <div id="wifiAddress" class="wifi-address">IP / ゲートウェイ / DNS：未取得</div>
   </div>
-  <p class="network-note">接続モードとSSID・パスワードはArduinoに保存されます。WiFi/MQTTのON・OFFは再起動で初期値に戻ります。WiFiがOFFの間は接続しません。</p>
-  <p class="network-note">2.4GHzの通常のWi-Fi用です。ブラウザでの同意・ログインや企業認証には対応しません。MQTTの接続先は別設定です。</p>
+  <p class="network-note">接続モードとSSID・パスワード・ホーム用BrokerはArduinoに保存されます。WiFi/MQTTのON・OFFは再起動で初期値に戻ります。WiFiがOFFの間は接続しません。</p>
+  <p class="network-note">2.4GHzの通常のWi-Fi用です。ブラウザでの同意・ログインや企業認証には対応しません。BrokerはWi-Fiモードに連動します。</p>
 </section>
 <section class="diagnostics" id="diagnosticsPanel" hidden aria-label="BLE診断ログ">
   <header><strong>BLE診断</strong><button id="closeDiagnostics">閉じる</button></header>
@@ -209,18 +216,50 @@ function clearKartId(){
 const WIFI_CONFIG_WRITE_UUID='19b10005-e8f2-537e-4f6c-d104768a1214';
 const WIFI_CONFIG_STATUS_UUID='19b10006-e8f2-537e-4f6c-d104768a1214';
 const WIFI_CONFIG_SSID_UUID='19b10007-e8f2-537e-4f6c-d104768a1214';
+const WIFI_CONFIG_BROKER_UUID='19b10008-e8f2-537e-4f6c-d104768a1214';
 const WIFI_MODE_NAMES={1:'BUFFALO',2:'iPhone',3:'ホーム・施設Wi-Fi'};
 let wifiConfigWriteChar=null,wifiConfigStatusChar=null,wifiConfigHandler=null;
 let wifiProvisioningBusy=false,wifiProfileEditing=false,wifiConfigSupported=false,wifiConfigToken=0,wifiCustomSaved=false;
+let wifiBrokerCapable=false,wifiBrokerLoaded=false,wifiActiveProfileMode=0,wifiSavedBroker={ip:'',port:1883};
+function parseWifiBroker(ip,port){
+  const parts=ip.trim().split('.');
+  if(parts.length!==4||parts.some(x=>!/^\d{1,3}$/.test(x)||Number(x)>255)||Number(parts[0])===0||Number(parts[0])===127||Number(parts[0])>=224)
+    throw Error('Broker PCの有効なIPv4を入力してください（例：192.168.1.50）。');
+  if(!/^\d+$/.test(String(port))||Number(port)<1||Number(port)>65535)
+    throw Error('MQTTポートは1〜65535の整数で入力してください。');
+  const octets=parts.map(Number),p=Number(port);
+  return {ip:octets.join('.'),port:p,bytes:[...octets,p&255,p>>8]};
+}
+function renderWifiBroker(){
+  const preset={1:'192.168.10.51:1883',2:'172.20.10.2:1883'};
+  const custom=wifiSavedBroker.ip?wifiSavedBroker.ip+':'+wifiSavedBroker.port:'未設定';
+  $('wifiBrokerActive').textContent='現在のBroker：'+(wifiBrokerCapable&&wifiBrokerLoaded?(preset[wifiActiveProfileMode]||custom):'FWの設定を使用');
+  $('wifiBrokerPreview').textContent=wifiBrokerCapable?'適用先Broker：'+(preset[$('wifiMode').value]||($('wifiBrokerIp').value?$('wifiBrokerIp').value+':'+$('wifiBrokerPort').value:'未設定')):
+    'Brokerの画面設定・モード連動には対応FWへの更新が必要です。';
+}
+function applyWifiBrokerProfile(v){
+  if(v.byteLength!==20||v.getUint8(0)!==1||!WIFI_MODE_NAMES[v.getUint8(1)])throw Error('invalid Broker profile');
+  if(v.getUint8(15)){
+    wifiSavedBroker=parseWifiBroker(Array.from({length:4},(_,i)=>v.getUint8(8+i)).join('.'),v.getUint16(12,true));
+  }else wifiSavedBroker={ip:'',port:1883};
+  if(!wifiProfileEditing&&!wifiProvisioningBusy){$('wifiBrokerIp').value=wifiSavedBroker.ip;$('wifiBrokerPort').value=wifiSavedBroker.port;}
+  wifiBrokerLoaded=true;updateWifiProfileControls();
+}
 function updateWifiProfileControls(){
   const disabled=!wifiConfigSupported||!wifiConfigWriteChar||wifiProvisioningBusy||bleBusy||sessionHasPendingOperation();
   ['wifiMode','wifiSsid','wifiPassword','saveWifiProfile','useSavedWifi'].forEach(id=>$(id).disabled=disabled);
+  ['wifiBrokerIp','wifiBrokerPort'].forEach(id=>$(id).disabled=disabled||!wifiBrokerCapable||!wifiBrokerLoaded);
+  if(wifiBrokerCapable&&!wifiBrokerLoaded)$('saveWifiProfile').disabled=true;
+  $('wifiBrokerFields').hidden=$('wifiMode').value!=='3'||!wifiBrokerCapable;
   $('savedWifiRow').hidden=!wifiCustomSaved||$('wifiMode').value!=='3';
   $('wifiCustomFields').hidden=$('wifiMode').value!=='3'||(wifiCustomSaved&&$('useSavedWifi').checked);
+  renderWifiBroker();
 }
 function clearWifiProfile(){
   if(wifiConfigStatusChar&&wifiConfigHandler&&typeof wifiConfigStatusChar.removeEventListener==='function')wifiConfigStatusChar.removeEventListener('characteristicvaluechanged',wifiConfigHandler);
   wifiConfigWriteChar=wifiConfigStatusChar=wifiConfigHandler=null;wifiConfigSupported=false;wifiProfileEditing=false;wifiCustomSaved=false;$('useSavedWifi').checked=false;
+  wifiBrokerCapable=wifiBrokerLoaded=false;wifiActiveProfileMode=0;wifiSavedBroker={ip:'',port:1883};
+  $('wifiBrokerIp').value='';$('wifiBrokerPort').value='1883';
   $('wifiPassword').value='';$('wifiSsid').value='';$('wifiActiveMode').textContent='不明';
   $('wifiAddress').textContent='IP / ゲートウェイ / DNS：未取得';
   $('wifiProfileMessage').textContent='設定機能が未対応、またはBLE未接続です。';updateWifiProfileControls();
@@ -228,6 +267,7 @@ function clearWifiProfile(){
 function applyWifiProfileStatus(v){
   if(v.byteLength!==20||v.getUint8(0)!==1||!WIFI_MODE_NAMES[v.getUint8(1)])throw Error('invalid WiFi profile status');
   wifiConfigSupported=Boolean(v.getUint8(19)&1);
+  wifiBrokerCapable=Boolean(v.getUint8(19)&2);wifiActiveProfileMode=v.getUint8(1);
   wifiCustomSaved=Boolean(v.getUint8(6));
   $('wifiActiveMode').textContent=WIFI_MODE_NAMES[v.getUint8(1)];
   if(!wifiProfileEditing&&!wifiProvisioningBusy)$('wifiMode').value=String(v.getUint8(1));
@@ -244,6 +284,11 @@ async function readWifiProfile(service,guard){
     wifiConfigStatusChar=await bounded(service.getCharacteristic(WIFI_CONFIG_STATUS_UUID),'WiFi config status');guard();
     stage='接続モードの読出';
     const status=await bounded(wifiConfigStatusChar.readValue(),'WiFi config read');guard();applyWifiProfileStatus(status);
+    if(wifiBrokerCapable){
+      stage='Broker設定用BLE (0008)';
+      const brokerChar=await bounded(service.getCharacteristic(WIFI_CONFIG_BROKER_UUID),'Broker characteristic');guard();
+      const broker=await bounded(brokerChar.readValue(),'Broker profile read');guard();applyWifiBrokerProfile(broker);
+    }
     const notices=[];
     wifiConfigHandler=e=>{if(e.target===wifiConfigStatusChar)try{applyWifiProfileStatus(e.target.value)}catch(error){logBleError('WiFi config status',error)}};
     wifiConfigStatusChar.addEventListener('characteristicvaluechanged',wifiConfigHandler);
@@ -297,10 +342,15 @@ function wifiProfilePayload(mode,ssid,password){
 }
 async function saveWifiProfile(){
   if(wifiProvisioningBusy||bleBusy||!wifiConfigSupported||!wifiConfigWriteChar||sessionHasPendingOperation())return;
-  let data;
-  try{data=wifiCustomSaved&&$('useSavedWifi').checked&&$('wifiMode').value==='3'?{s:new Uint8Array(),p:new Uint8Array()}:wifiProfilePayload(Number($('wifiMode').value),$('wifiSsid').value,$('wifiPassword').value)}
+  let data,broker=null;
+  const mode=Number($('wifiMode').value);
+  try{
+    if(wifiBrokerCapable&&!wifiBrokerLoaded)throw Error('Broker設定を読み出してから保存してください。');
+    data=wifiCustomSaved&&$('useSavedWifi').checked&&mode===3?{s:new Uint8Array(),p:new Uint8Array()}:wifiProfilePayload(mode,$('wifiSsid').value,$('wifiPassword').value);
+    if(wifiBrokerCapable&&mode===3)broker=parseWifiBroker($('wifiBrokerIp').value,$('wifiBrokerPort').value);
+  }
   catch(error){$('wifiProfileMessage').textContent=error.message;return;}
-  const mode=Number($('wifiMode').value),token=(++wifiConfigToken)&255,epoch=bleEpoch;
+  const token=(++wifiConfigToken)&255,epoch=bleEpoch;
   const writeChar=wifiConfigWriteChar,readChar=wifiConfigStatusChar;
   const guard=()=>{if(epoch!==bleEpoch||writeChar!==wifiConfigWriteChar)throw Error('BLE接続が切れました。再接続して保存状態を確認してください。')};
   wifiProvisioningBusy=true;setBleBusy(true);updateWifiProfileControls();
@@ -323,12 +373,15 @@ async function saveWifiProfile(){
     throw Error('応答待ちが終了しました。再接続して保存状態を確認してください。');
   }
   try{
-    await exchange([0,token,mode,data.s.length,data.p.length],0);
+    const begin=[0,token,mode,data.s.length,data.p.length];
+    if(wifiBrokerCapable)begin.push(...(broker?broker.bytes:[0,0,0,0,0,0]));
+    await exchange(begin,0);
     const bytes=new Uint8Array([...data.s,...data.p]);
     for(let offset=0;offset<bytes.length;offset+=17){
       const part=Array.from(bytes.slice(offset,offset+17));await exchange([1,token,offset,...part],offset+part.length);
     }
     await exchange([2,token],null);guard();
+    if(broker){wifiSavedBroker=broker;$('wifiBrokerIp').value=broker.ip;$('wifiBrokerPort').value=broker.port;}
     if(mode===3&&data.s.length)$('savedWifiName').textContent='保存済み（'+$('wifiSsid').value+'）を使う';
     $('wifiPassword').value='';wifiProfileEditing=false;
     $('wifiProfileMessage').textContent='保存しました。WiFiがONなら選択した接続先へ接続します。';
@@ -589,6 +642,7 @@ $('wifiMode').addEventListener('change',()=>{wifiProfileEditing=true;updateWifiP
 $('useSavedWifi').addEventListener('change',()=>{wifiProfileEditing=true;updateWifiProfileControls()});
 $('wifiSsid').addEventListener('input',()=>wifiProfileEditing=true);
 $('wifiPassword').addEventListener('input',()=>wifiProfileEditing=true);
+['wifiBrokerIp','wifiBrokerPort'].forEach(id=>$(id).addEventListener('input',()=>{wifiProfileEditing=true;renderWifiBroker()}));
 $('saveWifiProfile').addEventListener('click',saveWifiProfile);
 $('wifiToggle').addEventListener('change',e=>sendCommand([CMD_WIFI_ENABLED,e.target.checked?1:0]));
 $('mqttToggle').addEventListener('change',e=>sendCommand([CMD_MQTT_ENABLED,e.target.checked?1:0]));
@@ -599,7 +653,7 @@ $('closeDiagnostics').addEventListener('click',()=>{$('diagnosticsPanel').hidden
 $('probeBtn').addEventListener('click',manualProbe);
 $('exportLogBtn').addEventListener('click',()=>{renderDiagnostics();const url=URL.createObjectURL(new Blob([$('diagnosticsLog').value],{type:'application/json'}));const link=document.createElement('a');link.href=url;link.download='ekart-ble-'+Date.now()+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 document.addEventListener('visibilitychange',()=>{modeGeneration++;logBle('visibility',document.visibilityState);if(!document.hidden)checkBleHealth();});
-clearNetworkStatus();logBle('page-open','BLE diagnostics v1 / WiFi settings r2 / default=diagnostic');setInterval(checkBleHealth,500);
+clearNetworkStatus();logBle('page-open','BLE diagnostics v1 / WiFi settings r3 mode-brokers / default=diagnostic');setInterval(checkBleHealth,500);
 </script>
 </body>
 </html>
